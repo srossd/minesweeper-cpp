@@ -136,9 +136,15 @@ void get_data(int N, int trials) {
         double p = ps[j];
         printf("p = %.2f (%d/%d)\n",p, (j+1), ps.size());
 
-        string call = "./main "+to_string(N)+" "+to_string(p)+" "+to_string(trials);
-        string res = exec(call.c_str());
-        sscanf(res.c_str(), "%lf %lf %lf", &data[j], &remaining[j], &avg_max_core[j]);
+        for(int i = 0; i < 10; i++) {
+            string call = "./main "+to_string(N)+" "+to_string(p)+" "+to_string(trials/10);
+            string res = exec(call.c_str());
+            double x, y, z;
+            sscanf(res.c_str(), "%lf %lf %lf", &x, &y, &z);
+            data[j] += x/10;
+            remaining[j] += y/10;
+            avg_max_core[j] += z/10;
+        }
 
         // for(int i = 0; i < trials; i++) {
         //     vector<vector<int>> grid = buildGrid(N, p, true);
