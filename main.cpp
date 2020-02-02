@@ -11,6 +11,7 @@
 #include <fstream>
 #include <memory>
 #include <stdexcept>
+#include <muser2_api.hh>
 
 using namespace std;
 
@@ -21,6 +22,18 @@ typedef struct {
     bool success;
 } inference;
 
+typedef struct {
+    bool won;
+    int mines_remaining;
+    int max_core;
+} game_result;
+
+typedef struct {
+    double won;
+    double flagged;
+    double max_core;
+} sim_data;
+
 vector<vector<int>> buildGrid(int, double, bool = false);
 void pretty_print(vector<vector<int>>&);
 vector<vector<int>> eff_grid(vector<vector<int>>&);
@@ -28,41 +41,53 @@ void flag(vector<vector<int>>&, int, int);
 vector<pair<int,int>> frontier_inner(vector<vector<int>>&);
 vector<pair<int,int>> frontier_outer(vector<vector<int>>&);
 inference infer(vector<vector<int>>&);
-pair<bool, int> inference_play(vector<vector<int>>&, bool=false, bool=false);
+game_result inference_play(vector<vector<int>>&, bool=false, bool=false);
 vector<pair<int,int>> neighbors(int, int, int);
 void reveal(vector<vector<int>>&, vector<vector<int>>&, int, int);
 void test_muser();
 void get_data(int, int);
 string exec(const char*);
 pair<int, bool> call_muser(vector<pair<int, vector<int>>>, int);
+sim_data run_sims(int, double, int);
 
-int main() {
-    get_data(20, 100);
-    get_data(40, 100);
-    get_data(10, 100);
-}
-
-pair<int, bool> call_muser(vector<pair<int, vector<int>>> clauses, int nvars) {
-    ofstream gcnf("temp.gcnf");
-    gcnf << "p gcnf " << nvars << " " << clauses.size() << " " << clauses.back().first << endl;
-    for(pair<int,vector<int>> clause : clauses) {
-        gcnf << "{" << clause.first << "} ";
-        for(int var : clause.second)
-            gcnf << var << " ";
-        gcnf << "0" << endl;
+int main(int argc, char *argv[]) {
+    if(argc == 1) {
+        get_data(5, 100);
+        get_data(10, 100);
+        get_data(20, 100);
+        get_data(40, 100);
     }
-    gcnf.close();
+    else {
+        int N = atoi(argv[1]);
+        double p = atof(argv[2]);
+        int trials = atoi(argv[3]);
 
-    string muser_output = exec("./muser2 -grp -test temp.gcnf");
-    size_t result_idx = muser_output.find("result:");
-    bool sat = muser_output[result_idx+8] == 'S';
-
-    size_t size_idx = muser_output.find("MUS size:");
-    int size;
-    sscanf(muser_output.substr(size_idx + 10).c_str(), "%d", &size);
-
-    return pair<int,bool>(size, sat);
+        sim_data res = run_sims(N, p, trials);
+        printf("%0.5f %0.5f %0.5f\n", res.won, res.flagged, res.max_core);
+    }
 }
+
+// pair<int, bool> call_muser(vector<pair<int, vector<int>>> clauses, int nvars) {
+//     ofstream gcnf("temp.gcnf");
+//     gcnf << "p gcnf " << nvars << " " << clauses.size() << " " << clauses.back().first << endl;
+//     for(pair<int,vector<int>> clause : clauses) {
+//         gcnf << "{" << clause.first << "} ";
+//         for(int var : clause.second)
+//             gcnf << var << " ";
+//         gcnf << "0" << endl;
+//     }
+//     gcnf.close();
+
+//     string muser_output = exec("./muser2 -grp -test temp.gcnf");
+//     size_t result_idx = muser_output.find("result:");
+//     bool sat = muser_output[result_idx+8] == 'S';
+
+//     size_t size_idx = muser_output.find("MUS size:");
+//     int size;
+//     sscanf(muser_output.substr(size_idx + 10).c_str(), "%d", &size);
+
+//     return pair<int,bool>(size, sat);
+// }
 
 string exec(const char* cmd) {
     array<char, 128> buffer;
@@ -77,6 +102,25 @@ string exec(const char* cmd) {
     return result;
 }
 
+sim_data run_sims(int N, double p, int trials) {
+    double won = 0;
+    double flagged = 0;
+    double max_core = 0;
+    
+    for(int i = 0; i < trials; i++) {
+        vector<vector<int>> grid = buildGrid(N, p, true);
+        game_result res = inference_play(grid);
+        won += res.won;
+        flagged += 1-res.mines_remaining/(N*N*p);
+        max_core += res.max_core;
+    }
+    won /= trials;
+    flagged /= trials;
+    max_core /= trials;
+
+    return {.won = won, .flagged = flagged, .max_core = max_core};
+}
+
 void get_data(int N, int trials) {
     vector<double> ps(30);
     for(int i = 0; i < ps.size(); i++)
@@ -84,7 +128,7 @@ void get_data(int N, int trials) {
 
     
     vector<double> data(ps.size(), 0);
-    vector<double> timing(ps.size(), 0);
+    vector<double> remaining(ps.size(), 0);
     vector<double> avg_max_core(ps.size(), 0);
 
     printf("N = %d\n", N);
@@ -92,25 +136,29 @@ void get_data(int N, int trials) {
         double p = ps[j];
         printf("p = %.2f (%d/%d)\n",p, (j+1), ps.size());
 
-        time_t start = time(NULL);
-        for(int i = 0; i < trials; i++) {
-            vector<vector<int>> grid = buildGrid(N, p, true);
-            pair<bool,int> won = inference_play(grid);
-            if(won.first)
-                data[j]++;
-            avg_max_core[j] += won.second;
-        }
-        timing[j] = (time(NULL)-start+0.0)/trials;
-        data[j] /= trials;
-        avg_max_core[j] /= trials;
-        printf("Solved %0.0f%% of games, took %0.0f seconds, average max core = %0.2f\n\n", data[j]*100, timing[j]*trials, avg_max_core[j]);
+        string call = "./main "+to_string(N)+" "+to_string(p)+" "+to_string(trials);
+        string res = exec(call.c_str());
+        sscanf(res.c_str(), "%lf %lf %lf", &data[j], &remaining[j], &avg_max_core[j]);
+
+        // for(int i = 0; i < trials; i++) {
+        //     vector<vector<int>> grid = buildGrid(N, p, true);
+        //     game_result res = inference_play(grid);
+        //     if(res.won)
+        //         data[j]++;
+        //     remaining[j] += 1-res.mines_remaining/(N*N*p);
+        //     avg_max_core[j] += res.max_core;
+        // }
+        // remaining[j] /= trials;
+        // data[j] /= trials;
+        // avg_max_core[j] /= trials;
+        printf("Solved %0.0f%% of games, discovered %0.0f%% of mines, average max core = %0.2f\n\n", data[j]*100, remaining[j]*100, avg_max_core[j]);
     }
 
     ofstream data_file("data/solvability_data_"+to_string(N)+".txt");
     for (const auto &e : data) data_file << e << "\n";
 
-    ofstream timing_file("data/timing_data_"+to_string(N)+".txt");
-    for (const auto &e : timing) timing_file << e << "\n";
+    ofstream completion_file("data/completion_data_"+to_string(N)+".txt");
+    for (const auto &e : remaining) completion_file << e << "\n";
 
     ofstream core_file("data/core_data_"+to_string(N)+".txt");
     for (const auto &e : avg_max_core) core_file << e << "\n";
@@ -124,7 +172,7 @@ int count_mines(vector<vector<int>> grid) {
     return ans;
 }
 
-pair<bool, int> inference_play(vector<vector<int>>& grid, bool display, bool verbose) {
+game_result inference_play(vector<vector<int>>& grid, bool display, bool verbose) {
     int num_mines = count_mines(grid);
     vector<vector<int>> game(grid.size());
     for(int i = 0; i < grid.size(); i++)
@@ -155,12 +203,12 @@ pair<bool, int> inference_play(vector<vector<int>>& grid, bool display, bool ver
             int remaining = num_mines - count_mines(game);
             if(verbose)
                 printf("No more inferences are possible. %d mines remain hidden\n", remaining);
-            return pair<bool, int>(false, mc);
+            return {.won = false, .mines_remaining = remaining, .max_core = mc};
         }
     }
     if(verbose)
         printf("The game is completed by inference\n");
-    return pair<bool, int>(true, mc);
+    return {.won = true, .mines_remaining = 0, .max_core = mc};
 }
 
 inference infer(vector<vector<int>>& game) {
@@ -172,7 +220,9 @@ inference infer(vector<vector<int>>& game) {
     for(int i = 0; i < f_out.size(); i++)
         ind_f_out[f_out[i]] = i+1;
 
-    vector<pair<int,vector<int>>> clauses;
+    muser2 m;
+    m.init_all();
+    // vector<pair<int,vector<int>>> clauses;
     for(int i = 0; i < f_in.size(); i++) {
         vector<int> bool_vars;
         for(pair<int,int> n : neighbors(f_in[i].first, f_in[i].second, game.size())) {
@@ -199,36 +249,53 @@ inference infer(vector<vector<int>>& game) {
         for(int b = 0; b < 1 << bool_vars.size(); b++) {
             bitset<8> bs(b);
             if(bs.count() != eg[f_in[i].first][f_in[i].second]) {
-                vector<int> clause;
+                vector<muser2::lit> clause;
                 for(int i = 0; i < bool_vars.size(); i++)
                     clause.push_back((1-2*bs[i])*bool_vars[i]);
 
-                clauses.push_back(pair<int,vector<int>>(i, clause));
+                m.add_clause(clause.data(), clause.data()+clause.size(), i);
+                // clauses.push_back(pair<int,vector<int>>(i, clause));
             }
         } 
     }
 
-    int extra_group = f_in.size();
-    vector<int> is_mine_clause;
+    muser2::gid extra_group = f_in.size();
+    muser2::gid added_grp;
+    vector<muser2::lit> is_mine_clause;
     pair<int,bool> res;
+    int sat;
     for(int i = 0; i < f_out.size(); i++) {
         is_mine_clause = {i+1};
-        clauses.push_back(pair<int,vector<int>>(extra_group, is_mine_clause));
-        res = call_muser(clauses, f_out.size());
-        if(!res.second) {
-            return {.coord = f_out[i], .is_mine = false, .core = res.first, .success = true};
+        added_grp = m.add_clause(is_mine_clause.data(), is_mine_clause.data() + 1, extra_group);
+        m.init_run();
+        sat = m.test_sat();
+        // clauses.push_back(pair<int,vector<int>>(extra_group, is_mine_clause));
+        // res = call_muser(clauses, f_out.size());
+        if(sat == 20) {
+            m.compute_gmus();
+            return {.coord = f_out[i], .is_mine = false, .core = (int)m.gmus_gids().size(), .success = true};
         }
-        clauses.pop_back();
+        // clauses.pop_back();
+        if(added_grp == extra_group)
+            m.remove_group(extra_group);
+        m.reset_run();
         
         is_mine_clause = {-(i+1)};
-        clauses.push_back(pair<int,vector<int>>(extra_group, is_mine_clause));
-        res = call_muser(clauses, f_out.size());
-        if(!res.second) {
-            return {.coord = f_out[i], .is_mine = true, .core = res.first, .success = true};
+        added_grp = m.add_clause(is_mine_clause.data(), is_mine_clause.data() + 1, extra_group);
+        m.init_run();
+        sat = m.test_sat();
+        // clauses.push_back(pair<int,vector<int>>(extra_group, is_mine_clause));
+        // res = call_muser(clauses, f_out.size());
+        if(sat == 20) {
+            m.compute_gmus();
+            return {.coord = f_out[i], .is_mine = true, .core = (int)m.gmus_gids().size(), .success = true};
         }
-        clauses.pop_back();
+        // clauses.pop_back();
+        if(added_grp == extra_group)
+            m.remove_group(extra_group);
 
     }
+    m.reset_all();
     
     return {.coord = f_out[0], .is_mine = true, .core = 0, .success = false};
 }
