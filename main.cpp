@@ -11,6 +11,7 @@
 #include <fstream>
 #include <memory>
 #include <stdexcept>
+#include <iostream>
 #include <muser2_api.hh>
 
 using namespace std;
@@ -138,6 +139,8 @@ void get_data(int N, int trials, int batch_size) {
 
         int batches = (trials+1)/batch_size;
         for(int i = 0; i < batches; i++) {
+            printf("Batch %d/%d", i+1, batches);
+            cout.flush();
             string call = "./main "+to_string(N)+" "+to_string(p)+" "+to_string(batch_size);
             string res = exec(call.c_str());
             double x, y, z;
@@ -159,6 +162,7 @@ void get_data(int N, int trials, int batch_size) {
         // data[j] /= trials;
         // avg_max_core[j] /= trials;
         printf("Solved %0.0f%% of games, discovered %0.0f%% of mines, average max core = %0.2f\n\n", data[j]*100, remaining[j]*100, avg_max_core[j]);
+        cout.flush();
     }
 
     ofstream data_file("data/solvability_data_"+to_string(N)+".txt");
