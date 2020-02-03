@@ -45,17 +45,17 @@ game_result inference_play(vector<vector<int>>&, bool=false, bool=false);
 vector<pair<int,int>> neighbors(int, int, int);
 void reveal(vector<vector<int>>&, vector<vector<int>>&, int, int);
 void test_muser();
-void get_data(int, int);
+void get_data(int, int, int);
 string exec(const char*);
 pair<int, bool> call_muser(vector<pair<int, vector<int>>>, int);
 sim_data run_sims(int, double, int);
 
 int main(int argc, char *argv[]) {
     if(argc == 1) {
-        get_data(5, 100);
-        get_data(10, 100);
-        get_data(20, 100);
-        get_data(40, 100);
+        get_data(5, 300, 100);
+        get_data(10, 300, 100);
+        get_data(20, 300, 10);
+        get_data(40, 300, 10);
     }
     else {
         int N = atoi(argv[1]);
@@ -121,7 +121,7 @@ sim_data run_sims(int N, double p, int trials) {
     return {.won = won, .flagged = flagged, .max_core = max_core};
 }
 
-void get_data(int N, int trials) {
+void get_data(int N, int trials, int batch_size) {
     vector<double> ps(30);
     for(int i = 0; i < ps.size(); i++)
         ps[i] = 0.01 + (0.5-0.01)*i/(ps.size()-1);
@@ -136,14 +136,15 @@ void get_data(int N, int trials) {
         double p = ps[j];
         printf("p = %.2f (%d/%d)\n",p, (j+1), ps.size());
 
-        for(int i = 0; i < 10; i++) {
-            string call = "./main "+to_string(N)+" "+to_string(p)+" "+to_string(trials/10);
+        int batches = (trials+1)/batch_size;
+        for(int i = 0; i < batches; i++) {
+            string call = "./main "+to_string(N)+" "+to_string(p)+" "+to_string(batch_size);
             string res = exec(call.c_str());
             double x, y, z;
             sscanf(res.c_str(), "%lf %lf %lf", &x, &y, &z);
-            data[j] += x/10;
-            remaining[j] += y/10;
-            avg_max_core[j] += z/10;
+            data[j] += x/batches;
+            remaining[j] += y/batches;
+            avg_max_core[j] += z/batches;
         }
 
         // for(int i = 0; i < trials; i++) {
