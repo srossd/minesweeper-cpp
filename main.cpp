@@ -31,8 +31,11 @@ typedef struct {
 
 typedef struct {
     double won;
+    double won_std;
     double flagged;
+    double flagged_std;
     double max_core;
+    double max_core_std;
 } sim_data;
 
 vector<vector<int>> buildGrid(int, double, bool = false);
@@ -50,21 +53,26 @@ void get_data(int, int, int);
 string exec(const char*);
 pair<int, bool> call_muser(vector<pair<int, vector<int>>>, int);
 sim_data run_sims(int, double, int);
+double mean(vector<double>);
+double stdev(vector<double>);
+double combine_means(double, double, int, int);
+double combine_stds(double, double, double, double, int, int);
 
 int main(int argc, char *argv[]) {
-    if(argc == 1) {
-        get_data(5, 300, 100);
-        get_data(10, 300, 100);
-        get_data(20, 300, 10);
-        get_data(40, 300, 10);
+    if(atoi(argv[1]) == 0) {
+        int N = atoi(argv[2]);
+        double trials = atof(argv[3]);
+        int batch = atoi(argv[4]);
+
+        get_data(N, trials, batch);
     }
     else {
-        int N = atoi(argv[1]);
-        double p = atof(argv[2]);
-        int trials = atoi(argv[3]);
+        int N = atoi(argv[2]);
+        double p = atof(argv[3]);
+        int trials = atoi(argv[4]);
 
         sim_data res = run_sims(N, p, trials);
-        printf("%0.5f %0.5f %0.5f\n", res.won, res.flagged, res.max_core);
+        printf("%0.5f %0.5f %0.5f %0.5f %0.5f %0.5f\n", res.won, res.won_std, res.flagged, res.flagged_std, res.max_core, res.max_core_std);
     }
 }
 
@@ -104,22 +112,19 @@ string exec(const char* cmd) {
 }
 
 sim_data run_sims(int N, double p, int trials) {
-    double won = 0;
-    double flagged = 0;
-    double max_core = 0;
+    vector<double> wins;
+    vector<double> completion;
+    vector<double> cores;
     
     for(int i = 0; i < trials; i++) {
         vector<vector<int>> grid = buildGrid(N, p, true);
         game_result res = inference_play(grid);
-        won += res.won;
-        flagged += 1-res.mines_remaining/(N*N*p);
-        max_core += res.max_core;
+        wins.push_back(res.won);
+        completion.push_back(1-res.mines_remaining/(N*N*p));
+        cores.push_back(res.max_core);
     }
-    won /= trials;
-    flagged /= trials;
-    max_core /= trials;
 
-    return {.won = won, .flagged = flagged, .max_core = max_core};
+    return {.won = mean(wins), .won_std = stdev(wins), .flagged = mean(completion), .flagged_std = stdev(completion), .max_core = mean(cores), .max_core_std = stdev(cores)};
 }
 
 void get_data(int N, int trials, int batch_size) {
@@ -132,23 +137,41 @@ void get_data(int N, int trials, int batch_size) {
     vector<double> remaining(ps.size(), 0);
     vector<double> avg_max_core(ps.size(), 0);
 
+    vector<double> data_std(ps.size(), 0);
+    vector<double> remaining_std(ps.size(), 0);
+    vector<double> avg_max_core_std(ps.size(), 0);
+
     printf("N = %d\n", N);
     for(int j = 0; j < ps.size(); j++) {
         double p = ps[j];
         printf("p = %.2f (%d/%d)\n",p, (j+1), ps.size());
 
-        int batches = (trials+1)/batch_size;
+        int batches = (trials+0.5)/batch_size;
         for(int i = 0; i < batches; i++) {
-            printf("Batch %d/%d", i+1, batches);
+            printf("Batch %d/%d\n", i+1, batches);
             cout.flush();
-            string call = "./main "+to_string(N)+" "+to_string(p)+" "+to_string(batch_size);
+            string call = "./main 1 "+to_string(N)+" "+to_string(p)+" "+to_string(batch_size);
             string res = exec(call.c_str());
-            double x, y, z;
-            sscanf(res.c_str(), "%lf %lf %lf", &x, &y, &z);
-            data[j] += x/batches;
-            remaining[j] += y/batches;
-            avg_max_core[j] += z/batches;
+            double x, xs, y, ys, z, zs;
+            sscanf(res.c_str(), "%lf %lf %lf %lf %lf %lf", &x, &xs, &y, &ys, &z, &zs);
+
+            int nseen = i*batch_size;
+            double new_data = combine_means(data[j], x, nseen, batch_size);
+            double new_remaining = combine_means(remaining[j], y, nseen, batch_size);
+            double new_core = combine_means(avg_max_core[j], z, nseen, batch_size);
+
+            data_std[j] = combine_stds(data[j], x, data_std[j], xs, nseen, batch_size);
+            remaining_std[j] = combine_stds(remaining[j], y, remaining_std[j], ys, nseen, batch_size);
+            avg_max_core_std[j] = combine_stds(avg_max_core[j], z, avg_max_core_std[j], zs, nseen, batch_size);
+
+            data[j] = new_data;
+            remaining[j] = new_remaining;
+            avg_max_core[j] = new_core;
         }
+
+        data_std[j] /= sqrt(trials);
+        remaining_std[j] /= sqrt(trials);
+        avg_max_core_std[j] /= sqrt(trials);
 
         // for(int i = 0; i < trials; i++) {
         //     vector<vector<int>> grid = buildGrid(N, p, true);
@@ -173,6 +196,15 @@ void get_data(int N, int trials, int batch_size) {
 
     ofstream core_file("data/core_data_"+to_string(N)+".txt");
     for (const auto &e : avg_max_core) core_file << e << "\n";
+
+    ofstream data_error_file("data/solvability_data_error_"+to_string(N)+".txt");
+    for (const auto &e : data_std) data_error_file << e << "\n";
+
+    ofstream completion_error_file("data/completion_data_error_"+to_string(N)+".txt");
+    for (const auto &e : remaining_std) completion_error_file << e << "\n";
+
+    ofstream core_error_file("data/core_data_error_"+to_string(N)+".txt");
+    for (const auto &e : avg_max_core_std) core_error_file << e << "\n";
 }
 
 int count_mines(vector<vector<int>> grid) {
@@ -458,4 +490,32 @@ void pretty_print(vector<vector<int>>& game) {
             printf("_____|");
         printf("\n");
     }
+}
+
+double mean(vector<double> v) {
+    double sum = std::accumulate(v.begin(), v.end(), 0.0);
+    double mean = sum / v.size();
+
+    return mean;
+}
+
+double stdev(vector<double> v) {
+    double m = mean(v);
+
+    std::vector<double> diff(v.size());
+    std::transform(v.begin(), v.end(), diff.begin(),
+                std::bind2nd(std::minus<double>(), m));
+    double sq_sum = std::inner_product(diff.begin(), diff.end(), diff.begin(), 0.0);
+    double stdev = std::sqrt(sq_sum / v.size());
+
+    return stdev;
+}
+
+double combine_means(double mu1, double mu2, int n1, int n2) {
+    return (n1*mu1 + n2*mu2)/(n1+n2);
+}
+
+double combine_stds(double mu1, double mu2, double sigma1, double sigma2, int n1, int n2) {
+    double mu = combine_means(mu1, mu2, n1, n2);
+    return sqrt((n1*sigma1*sigma1 + n2*sigma2*sigma2 + n1*(mu1-mu)*(mu1-mu) + n2*(mu2-mu)*(mu2-mu))/(n1+n2));
 }
